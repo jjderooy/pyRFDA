@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.optimize import curve_fit
+from geometry import Geometry
 
 def elastic_modulus(geo, f_f):
     '''
@@ -20,6 +21,24 @@ def elastic_modulus(geo, f_f):
     T = 1 + 6.585*np.power((geo._t/geo._L), 2)
     E = 0.9465*(geo._m*np.power(f_f,2)/geo._b)*(np.power(geo._L/geo._t,3))*T
     return E
+
+def shear_modulus(geo, t_f):
+    '''
+    Input:
+      geo: Instance of geometry class for the sample under analysis
+      f_t: [Hz] Resonant frequency of the torsional mode of vibration
+
+    Outputs:
+      G: [Pa] Shear modulus of the sample's material
+
+    Desc:
+      The shear modulus G of a material can be computed from the
+      resonant frequency of the torsional mode of vibration. More info:
+      https://en.wikipedia.org/wiki/Impulse_excitation_technique
+    '''
+
+    # TODO implement this
+    return -1
 
 def upper_envelope(s):
     '''

@@ -1,14 +1,11 @@
 from PyQt5 import QtGui, QtWidgets, uic, QtCore
-from PyQt5.QtCore import QThreadPool
 from geometry import Geometry
 from scipy.io.wavfile import write
-from PyQt5 import QtWidgets
 import matplotlib.pyplot as plt
 import sounddevice as sd
 import soundfile as sf
 import pyqtgraph as pg
 import numpy as np
-import queue
 import rfda 
 
 # TODO
@@ -41,7 +38,8 @@ def audio_callback(indata, frames, time, status):
     # Roll the data into array from right to left for plotting
     shift = len(indata)
     audio_wfrm_data = np.roll(audio_wfrm_data, -shift, axis=0)
-    audio_wfrm_data[-shift:] = indata[0] # Downsample
+    #audio_wfrm_data[-shift:] = indata[0] # Downsample (fast)
+    audio_wfrm_data[-shift:] = np.concatenate(indata) # No downsample (slow)
 
     if recording_flag == True:
         audio_list.append(np.concatenate(indata))
@@ -51,6 +49,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # To be populated with plotLine object in setup_graphs()
     audio_wfrm_line = None
+    audio_wfrm_fft_line = None
 
     # Movable vertical line for selecting fft peak
     fft_peak_vline = pg.InfiniteLine(movable=True)
@@ -63,7 +62,11 @@ class MainWindow(QtWidgets.QMainWindow):
     # Values of the sample are populated in the ui
     sample_geometry = Geometry()
 
+    # Input stream from sounddevice. Initialized in select_input_device()
+    stream = None
+
     def __init__(self, *args, **kwargs):
+
         # Load external ui file. Edit this ui file in 'Qt Designer'
         super(MainWindow, self).__init__(*args, **kwargs)
         uic.loadUi('RFDA.ui', self)
@@ -84,22 +87,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.check_impulse_timer.setInterval(200) # 5 Hz
         self.check_impulse_timer.timeout.connect(self.handle_recording)
         self.check_impulse_timer.start()
-
-        # Thread to manage recording of audio
-        self.thread_manager = QThreadPool()
-
+        
         # Welcome message
         self.msg("Welcome to pyRFDA companion!")
         self.msg("Start by defining sample type and parameters," + \
                  " then click the \"Create Sample\" button.")
 
+
     def setup_graphs(self):
         # Live microphone audio graph
         self.audio_wfrm_line = \
             self.audio_wfrm.plot(audio_wfrm_data, 
-                                 autodownsample=True, 
-                                 downsampleMethod='peak')
-        self.audio_wfrm.setYRange(min=-0.5, max=0.5)
+                                 autodownsample=True)
+        self.audio_wfrm.setYRange(min=-0.3, max=0.3)
         self.audio_wfrm.showGrid(x=True, y=True)
         self.audio_wfrm.setTitle("Live Microphone Audio", size="12pt")
         self.audio_wfrm.setLabel("left", "Intensity")
@@ -108,6 +108,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.audio_wfrm.addItem(self.audio_trig_hline)
 
         # FFT of audio recording after impulse is detected
+        self.audio_wfrm_fft_line = self.audio_wfrm.plot()
         self.audio_wfrm_fft.showGrid(x=True, y=True)
         self.audio_wfrm_fft.setTitle("FFT of Recorded Waveform", size="12pt")
         self.audio_wfrm_fft.setLabel("left", "Amplitude")
@@ -165,41 +166,170 @@ class MainWindow(QtWidgets.QMainWindow):
                               channels=1) as file:
                 file.write(audio_arr)
 
-            fft_arr = np.abs(np.fft.rfft(audio_arr))
-            freqs_arr = np.fft.rfftfreq(audio_arr.size, 1.0/44100)
-
-            self.audio_wfrm_fft.plot(freqs_arr,
-                                     fft_arr,
-                                     autodownsample=True,
-                                     downsampleMethod='peak')
-
-            # Crop the range to [0, 20kHz] if necessary
-            if np.max(freqs_arr) > 20000:
-                self.audio_wfrm_fft.setXRange(0, 20000)
+            # Compute sample data from run and plot it
+            self.process_run(audio_arr)
 
             self.record_btn.setChecked(False)
             self.record_btn.setText("Record")
             self.record_btn.setEnabled(True)
             self.msg("Finished recording")
 
+    def process_run(self, audio_arr):
+        '''
+        Compute E, G, damping etc from the recorded run and pass them 
+        to append_run() so they show up on the table.
+        '''
+
+        # TODO don't always want to immediately add everything to the table
+        # since it takes two setups to get all the data (E and G)
+
+        fft_arr = np.abs(np.fft.rfft(audio_arr))
+        freqs_arr = np.fft.rfftfreq(audio_arr.size, 1.0/44100)
+        
+        # Graph the FFT
+        # TODO This call to clear removes the vline
+        #self.audio_wfrm_fft.clear()
+        self.audio_wfrm_fft.plot(freqs_arr,
+                                 fft_arr,
+                                 autodownsample=True,
+                                 downsampleMethod='peak')
+
+        # Crop the range to [0, 20kHz] if necessary
+        if np.max(freqs_arr) > 20000:
+            self.audio_wfrm_fft.setXRange(0, 20000)
+        
+        # Estimate the peak value
+        peak_est = self.fft_peak_vline.value()
+        indices = np.where(
+                (freqs_arr > peak_est - 100) & (freqs_arr < peak_est + 100))
+        resonant_freq = freqs_arr[np.argmax(fft_arr)]
+
+        # TODO one of these will be wrong for a given run type
+        # Compute elastic and shear mod from peak
+        E = rfda.elastic_modulus(self.sample_geometry, resonant_freq)
+        G = rfda.shear_modulus(self.sample_geometry, resonant_freq)
+
+        # b coeff of exponential fit
+        damping_coeff = rfda.damping_coeff(audio_arr)
+
+        # Inverse quality factor
+        Q_inv = damping_coeff/(np.pi*resonant_freq)
+
+        run_dict = {}
+        run_dict["loss_rate"] = 0.0 # TODO implement
+        run_dict["damping"]   = damping_coeff
+        run_dict["freq"] = resonant_freq
+        run_dict["time"] = audio_arr.size/44100
+        run_dict["Q-1"]  = Q_inv
+        run_dict["E"]    = E/1E9
+        run_dict["G"]    = G/1E9
+
+        self.append_run(run_dict)
+
+    def append_run(self, row_data):
+        '''
+        Create a new row in the runs_table, and add row_data to it.
+        row_data is a dict with the following keys:
+        "freq", "time", "E", "G", "damping", "loss_rate", "Q-1"
+        '''
+
+        # It's a bit messy to do it this way but it allows better
+        # control over the formatting.
+
+        row_pos = self.runs_table.rowCount()
+        self.runs_table.insertRow(row_pos)
+        items = []
+
+        # Create items for the table. Each cell requires a QTableWidgetItem
+        items.append(QtWidgets.QTableWidgetItem(
+                                self.name_box.text()))
+        items.append(QtWidgets.QTableWidgetItem(
+                                self.sample_geometry.shape()))
+        items.append(QtWidgets.QTableWidgetItem(
+                                "{:.2f}".format(row_data["freq"])))
+        items.append(QtWidgets.QTableWidgetItem(
+                                "{:.2f}".format(row_data["time"])))
+        items.append(QtWidgets.QTableWidgetItem(
+                                "{:.2f}".format(row_data["E"])))
+        items.append(QtWidgets.QTableWidgetItem(
+                                "{:.2f}".format(row_data["G"])))
+        items.append(QtWidgets.QTableWidgetItem(
+                                "{:.5f}".format(row_data["damping"])))
+        items.append(QtWidgets.QTableWidgetItem(
+                                "{:.5}".format(row_data["Q-1"])))
+
+        # Add each item to the table
+        for i in range(0, len(items)):
+            self.runs_table.setItem(row_pos, i, items[i])
+
     def setup_inputs(self):
         '''
         # Certain inputs like dropdown menus can't be configured in
         # Qt Designer so they're configured here.
         '''
-            
+
+        # Add input devices from sd to the devices dropdown
+        devs = sd.query_devices()
+        dev_names = [ dev['name'] \
+                for dev in devs if dev['max_input_channels'] > 0]
+        self.input_dropdown.addItems(dev_names)
+
+        # Set to the default device since it should always be present
+        default_idx = self.input_dropdown.findText("default")
+        if default_idx != -1:
+            self.input_dropdown.setCurrentIndex(default_idx)
+
+        # Connect to allow changing device
+        self.input_dropdown.activated.connect(
+                self.select_input_device)
+
         # Options for sample geometry
         self.geometry_dropdown.addItems(["Rectangle", "Rod", "Disc"])
         self.geometry_dropdown.activated.connect(
                 self.hide_sample_params)
         self.create_geo_btn.clicked.connect(self.create_geometry)
 
+        # Configure the runs table
+        header_list = [
+                "Name ",
+                "Type ",
+                "Freq [Hz] ",
+                "Time [s] ",
+                "E [GPa] ",
+                "G [GPa] ",
+                "Q^-1 ",
+                "Damping ",
+                "Notes "]
+        self.runs_table.setColumnCount(len(header_list))
+        self.runs_table.setHorizontalHeaderLabels(header_list)
+        header = self.runs_table.horizontalHeader()
+        header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+
     def msg(self, s):
         # Shorter wrapper for sending status message to the text box
         s = "> " + s
         self.status_msg_box.appendPlainText(s)
 
-    ''' SIGNALS '''
+    ## SIGNALS ##
+
+    def select_input_device(self):
+        '''
+        When the "Input Device" dropdown is clicked, change to the new
+        input device. This includes handling the sounddevice stream to
+        gracefully point it to the new device.
+        '''
+
+        if self.stream is None:
+            self.stream = sd.InputStream(callback=audio_callback, channels=1)
+
+        self.stream.stop()
+
+        # Set the default device to be current text
+        sd.default.device = self.input_dropdown.currentText()
+        dev = self.input_dropdown.currentText()
+        self.msg("Set dev to " + dev)
+
+        self.stream.start()
 
     def hide_sample_params(self):
         '''
@@ -232,6 +362,8 @@ class MainWindow(QtWidgets.QMainWindow):
         Additionally, the estimated flexural and torsional
         frequencies are calculated if estimates for E and G
         are provided.
+
+        Finally, this also enable the "Record" button
         '''
 
         L = self.length_box.value()
@@ -286,28 +418,29 @@ class MainWindow(QtWidgets.QMainWindow):
         if G != 0:
             t_f = self.sample_geometry.torsional_freq(G)
             self.torsional_f_est.setValue(int(t_f))
+
+        self.record_btn.setEnabled(True)
             
 
 if __name__ == "__main__":
 
+    # TODO can these globals be moved into the mainwindow
     # Global ndarry to plot live recorded audio.
+    global audio_wfrm_data
     audio_wfrm_data = np.zeros(100000) # TODO adjust to sample rate
 
     # Global list to buffer audio before it is written to file.
+    global audio_list
     audio_list = []
 
     # Global flag to control recording of data to file.
+    global recording_flag
     recording_flag = False
-    
-    # Audio stream for recording from mic
-    stream = sd.InputStream(device=4, callback=audio_callback)
-    stream.start()
 
     app = QtWidgets.QApplication([])
     main = MainWindow()
     main.show()
     app.exec()
-
 
 '''
   Audacity recording at 384000 sample rate.
