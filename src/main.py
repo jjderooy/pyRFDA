@@ -12,12 +12,10 @@ import rfda
 # Export button that saves graphs as pngs and csv.
 # Report button that creates a PDF of the sample parameters etc.
 # ^ maybe html and then print that? Or LaTeX????
-# Damping coeff (b coeff) and inverse Q factor
-# Multiple successive runs in tabular form
-# Briefly look at selecting peak in fft rather than estimating E,G
-# ^ look at 'LinearRegionItem'
-# Input device selection using sd.query_device()
-# Measure length of time for exponential decay to background noise
+# Page 21 of Manual 2.5 has much less restrictive geometry AR.
+# Inv Q factor varies widely.
+# Plot recorded waveform after run is complete and show fitted exp.
+# ^ maybe show a legend with the exponential curve equation?
 
 def audio_callback(indata, frames, time, status):
     '''
@@ -31,6 +29,7 @@ def audio_callback(indata, frames, time, status):
     Additionally, if actively recording, buffers data into a list of 
     ndarrays which will later be FFT'd etc.
     '''
+
     global audio_wfrm_data
     global audio_list
     global recording_flag
@@ -38,20 +37,44 @@ def audio_callback(indata, frames, time, status):
     # Roll the data into array from right to left for plotting
     shift = len(indata)
     audio_wfrm_data = np.roll(audio_wfrm_data, -shift, axis=0)
-    #audio_wfrm_data[-shift:] = indata[0] # Downsample (fast)
-    audio_wfrm_data[-shift:] = np.concatenate(indata) # No downsample (slow)
+    audio_wfrm_data[-shift:] = np.concatenate(indata)
 
     if recording_flag == True:
         audio_list.append(np.concatenate(indata))
 
+class TableModel(QtCore.QAbstractTableModel):
+    '''
+    In Qt, a QTableView requires a model for how to display
+    the data in the table. This is user defined for flexibility.
+
+    Taken from:
+    https://www.pythonguis.com/tutorials/qtableview-modelviews
+    -numpy-pandas/#introduction-to-qtableview
+    '''
+
+    def __init__(self, data):
+        super(TableModel, self).__init__()
+        self._data = data
+
+    def data(self, index, role):
+        if role == QtCore.Qt.DisplayRole:
+            return self._data[index.row()][index.column()]
+
+    def rowCount(self, index):
+        return len(self._data)
+
+    def columnCount(self, index):
+        return len(self._data[0])
 
 class MainWindow(QtWidgets.QMainWindow):
 
     # TODO these can be moved to init
 
-    # To be populated with plotLine object in setup_graphs()
-    audio_wfrm_line = None
+    # To be populated with plotLine objects
+    audio_wfrm_line     = None
     audio_wfrm_fft_line = None
+    audio_envelope_line = None
+    audio_exp_fit_line  = None
 
     # Movable vertical line for selecting fft peak
     fft_peak_vline = pg.InfiniteLine(movable=True)
@@ -90,27 +113,60 @@ class MainWindow(QtWidgets.QMainWindow):
         self.check_impulse_timer.timeout.connect(self.handle_recording)
         self.check_impulse_timer.start()
 
+        # List of lists stores data of runs_table. DO NOT change this
+        # order without also updating the order in process_run() and
+        # update_run_avgs()
+        header = [ "Freq [Hz] ",
+                   "Time [s] ",
+                   "E [GPa] ",
+                   "G [GPa] ",
+                   "Q^-1 ",
+                   "Damping ",
+                   "Notes "]
+        self.runs_table_data = [header, ["-"]*len(header)]
+        self.runs_table_model = TableModel(self.runs_table_data)
+        self.runs_table.setModel(self.runs_table_model)
+
+        # List of lists stores data of avgs_table. DO NOT change this
+        # order without also updating the order in save_run()
+        header = [ "F_f (E) [Hz] ",
+                   "F_t (G) [Hz] ",
+                   "E [GPa] ",
+                   "G [GPa] ",
+                   "Poisson R ",
+                   "Q^-1 "]
+        self.avgs_table_data = [header, ["-"]*len(header)]
+        self.avgs_table_model = TableModel(self.avgs_table_data)
+        self.avgs_table.setModel(self.avgs_table_model)
+
         # Dictionary that stores measured and computed values across
-        # multiple runs when collecting E and G.
+        # multiple runs when collecting E and G. Converted to a list
+        # and appended to the runs_table model when the save_run_btn 
+        # is clicked.
         self.run_data = {}
-        
+
         # Welcome message
         self.msg("Welcome to pyRFDA companion!")
         self.msg("Start by defining sample type and parameters," + \
-                 " then click the \"Create Sample\" button.")
+                " then click the \"Create Sample\" button.")
 
     def setup_graphs(self):
         # Live microphone audio graph
         self.audio_wfrm_line = \
-            self.audio_wfrm.plot(audio_wfrm_data, 
-                                 autodownsample=True)
-        self.audio_wfrm.setYRange(min=-0.3, max=0.3)
+                self.audio_wfrm.plot(audio_wfrm_data, 
+                                     autodownsample=True)
+        self.audio_wfrm.setYRange(min=-0.2, max=0.2)
         self.audio_wfrm.showGrid(x=True, y=True)
         self.audio_wfrm.setTitle("Live Microphone Audio", size="12pt")
         self.audio_wfrm.setLabel("left", "Intensity")
         self.audio_wfrm.setLabel("right", "") # For padding
         self.audio_wfrm.setLabel("bottom", "Sample")
         self.audio_wfrm.addItem(self.audio_trig_hline)
+
+        self.audio_envelope_line = self.audio_wfrm.plot(
+                pen={'color': 'red'}, downsample=100)
+
+        self.audio_exp_fit_line = self.audio_wfrm.plot(pen={'color': 'blue'})
 
         # FFT of audio recording after impulse is detected
         self.audio_wfrm_fft_line = self.audio_wfrm_fft.plot()
@@ -164,13 +220,6 @@ class MainWindow(QtWidgets.QMainWindow):
             # Flatten list to single ndarray
             audio_arr = np.concatenate(audio_list)
 
-            # Write to file
-            with sf.SoundFile("test.wav",
-                              mode='w',
-                              samplerate=44100,
-                              channels=1) as file:
-                file.write(audio_arr)
-
             # Compute sample data from run and plot it
             self.process_run(audio_arr)
 
@@ -182,92 +231,112 @@ class MainWindow(QtWidgets.QMainWindow):
     def process_run(self, audio_arr):
         '''
         Compute E, G, damping etc from the recorded run and pass them 
-        to append_run() so they show up on the table.
+        to stage_run() so they show up on the table.
         '''
 
-        # TODO don't always want to immediately add everything to the table
-        # since it takes two setups to get all the data (E and G)
-
         fft_arr = np.abs(np.fft.rfft(audio_arr))
-        freqs_arr = np.fft.rfftfreq(audio_arr.size, 1.0/44100)
-        
+        freqs_arr = np.fft.rfftfreq(audio_arr.size, 1.0/48000)
+
         # Graph the FFT
-        # TODO This call to clear removes the vline
-        #self.audio_wfrm_fft_line.setData(freqs_arr, fft_arr)
-        #self.audio_wfrm_fft.clear()
-        self.audio_wfrm_fft.plot(
-                freqs_arr,
-                fft_arr,
-                autodownsample=True,
-                downsampleMethod='peak')
+        self.audio_wfrm_fft_line.setData(freqs_arr, fft_arr)
 
         # Crop the range to [0, 20kHz] if necessary
         if np.max(freqs_arr) > 20000:
             self.audio_wfrm_fft.setXRange(0, 20000)
-        
-        # Estimate the peak value
+
+        # Find the peak frequency based on FFT magnitude by cropping
+        # to freq/values near the vline and searching for the largest.
         peak_est = self.fft_peak_vline.value()
         indices = np.where(
                 (freqs_arr > peak_est - 100) & (freqs_arr < peak_est + 100))
-        resonant_freq = freqs_arr[np.argmax(fft_arr)]
+        cropped_fft = fft_arr[indices]
+        cropped_freqs = freqs_arr[indices]
+        resonant_freq = cropped_freqs[np.argmax(cropped_fft)]
+        self.run_data["freq"] = resonant_freq
 
-        # TODO one of these will be wrong for a given run type
-        # Compute elastic and shear mod from peak
-        E = rfda.elastic_modulus(self.sample_geometry, resonant_freq)
-        G = rfda.shear_modulus(self.sample_geometry, resonant_freq)
+        # Compute material modulus from peak based on run type
+        match self.run_type_dropdown.currentText():
 
-        # b coeff of exponential fit
-        damping_coeff = rfda.damping_coeff(audio_arr)
+            case "Elastic Mod":
+                E = rfda.elastic_modulus(self.sample_geometry, resonant_freq)
+                self.run_data["E"] = E
+                self.run_data.pop("G", "")
+
+            case "Shear Mod":
+                G = rfda.shear_modulus(self.sample_geometry, resonant_freq)
+                self.run_data["G"] = G
+                self.run_data.pop("E", "")
+
+            case _:
+                self.msg("Error: Unknown run type.")
+
+        # Graph the recorded audio, the envelope, and the fitted exponential
+        self.update_wfrm_timer.stop()
+        self.check_impulse_timer.stop()
+
+        self.audio_wfrm_line.setData(audio_arr)
+
+        # Upper envelope in red
+        ue = rfda.upper_envelope(audio_arr)
+        self.audio_envelope_line.setData(ue[0], ue[1])
+
+        # Fit the exponential decay
+        a, b, c = rfda.exponential_fit(audio_arr)
+        x = np.linspace(0, audio_arr.size, 5000)
+        exp_fit = rfda.damped_exp(x, a, b, c)
+        self.audio_exp_fit_line.setData(x, exp_fit)
+
+        self.audio_wfrm.autoRange()
+
+        # b coeff of exponential fit is the damping coeff
+        self.run_data["damping"] = b
 
         # Inverse quality factor
-        Q_inv = damping_coeff/(np.pi*resonant_freq)
+        self.run_data["Q-1"] = rfda.inv_Q_factor(b, resonant_freq)
 
-        self.run_data["loss_rate"] = 0.0 # TODO implement
-        self.run_data["damping"]   = damping_coeff
-        self.run_data["freq"] = resonant_freq
-        self.run_data["time"] = audio_arr.size/44100
-        self.run_data["Q-1"]  = Q_inv
-        self.run_data["E"]    = E/1E9
-        self.run_data["G"]    = G/1E9
-        self.save_run()
+        # Time of the run in seconds
+        self.run_data["time"] = audio_arr.size/48000
 
-    def save_run(self):
+        # Show the run on the runs_table
+        self.stage_run()
+
+    def stage_run(self):
         '''
-        Create a new row in the runs_table, and add run_data to it.
+        Convert the run_data dictionary to a list in the correct
+        order for adding to the runs_table model. This data is
+        always inserted at the top row of the runs_table. To save
+        a run, a new row is simply inserted at the top of the table.
         '''
 
-        # It's a bit messy to do it this way but it allows better
-        # control over the formatting.
+        run_list = []
 
-        items = []
+        # TODO iterate over the header list to streamline this?
 
-        # Create items for the table. Each cell requires a QTableWidgetItem
-        items.append(QtWidgets.QTableWidgetItem(
-                                "{:.2f}".format(self.run_data["freq"])))
-        items.append(QtWidgets.QTableWidgetItem(
-                                "{:.2f}".format(self.run_data["time"])))
+        run_list.append( "{:.2f}".format(self.run_data["freq"]))
+        run_list.append( "{:.2f}".format(self.run_data["time"]))
 
-        # Fill out appropriate entry based on run type
-        if self.run_type_dropdown.currentText() == "Elastic Mod":
-            items.append(QtWidgets.QTableWidgetItem(
-                                    "{:.2f}".format(self.run_data["E"])))
-            items.append(QtWidgets.QTableWidgetItem("-"))
-        else:
-            items.append(QtWidgets.QTableWidgetItem("-"))
-            items.append(QtWidgets.QTableWidgetItem(
-                                "{:.2f}".format(self.run_data["G"])))
+        # Only E or G exists in a given run
+        try:
+            run_list.append( "{:.1f}".format(self.run_data["E"]/1E9))
+        except KeyError:
+            run_list.append("-")
 
-        items.append(QtWidgets.QTableWidgetItem(
-                                "{:.5f}".format(self.run_data["damping"])))
-        items.append(QtWidgets.QTableWidgetItem(
-                                "{:.5f}".format(self.run_data["Q-1"])))
+        try:
+            run_list.append( "{:.1f}".format(self.run_data["G"]/1E9))
+        except KeyError:
+            run_list.append("-")
 
-        # Add each item to the table
-        self.runs_table.insertRow(0)
-        for i in range(0, len(items)):
-            self.runs_table.setItem(0, i, items[i])
+        run_list.append( "{:.3E}".format(self.run_data["Q-1"]))
+        run_list.append( "{:.3E}".format(self.run_data["damping"]))
 
-        self.update_run_avgs()
+        run_list.append(self.notes_box.toPlainText())
+
+        # Overwrite the last row
+        self.runs_table_data[-1] = run_list
+
+        # Force the table to update
+        self.runs_table_model.layoutChanged.emit()
+        self.save_run_btn.setEnabled(True)
 
     def update_run_avgs(self):
         '''
@@ -275,25 +344,53 @@ class MainWindow(QtWidgets.QMainWindow):
         Called when a run is saved in save_run()
         '''
 
-        row_count = self.runs_table.rowCount()
-
+        sum_f_f = 0.0
+        sum_t_f = 0.0
         sum_E = 0.0
         sum_G = 0.0
         sum_Q_inv = 0.0
 
-        for row in range(0, row_count):
-            sum_E += float(self.runs_table.item(row, 2).text())
+        # Skip first row because its the header
+        for row in self.runs_table_data[1:]:
+            
+            # Check what type of measurement it was
+            if row[3] == "-":
+                # E measurment
+                sum_f_f += float(row[0])
+                sum_E += float(row[2])
+            else:
+                # G measurment
+                sum_t_f += float(row[0])
+                sum_G += float(row[3])
 
-        # Test
-        item = QtWidgets.QTableWidgetItem( "{:.2f}".format(sum_E))
-        self.runs_table.setItem(0, 2, item)
+            sum_Q_inv += float(row[4])
 
+        # Poisson ratio using E and G
+        try:
+            poisson_r = rfda.poisson(sum_E, sum_G)
+        except ValueError:
+            poisson_r = "-"
+
+        # Table always has at least the header and one row when called
+        n = len(self.runs_table_data) - 1 
+        avgs = [ sum_f_f / n,
+                 sum_t_f / n,
+                 sum_E / n,
+                 sum_G / n,
+                 poisson_r,
+                 sum_Q_inv / n ]
+
+        self.avgs_table_data[-1] = avgs
+        self.avgs_table_model.layoutChanged.emit()
 
     def setup_inputs(self):
         '''
         # Certain inputs like dropdown menus can't be configured in
         # Qt Designer so they're configured here.
         '''
+
+        # Record button
+        self.record_btn.clicked.connect(self.record)
 
         # Add input devices from sd to the devices dropdown
         devs = sd.query_devices()
@@ -310,6 +407,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.input_dropdown.activated.connect(
                 self.select_input_device)
 
+        # Call once to start the default device
+        self.select_input_device()
+
         # Options for sample geometry
         self.geometry_dropdown.addItems(["Rectangle", "Rod", "Disc"])
         self.geometry_dropdown.activated.connect(
@@ -319,43 +419,48 @@ class MainWindow(QtWidgets.QMainWindow):
         # Run type (E or G)
         self.run_type_dropdown.addItems(["Elastic Mod", "Shear Mod"])
 
-        # Configure the runs table
-        header_list = [
-                "Freq [Hz] ",
-                "Time [s] ",
-                "E [GPa] ",
-                "G [GPa] ",
-                "Q^-1 ",
-                "Damping ",
-                "Notes "]
-        self.runs_table.setColumnCount(len(header_list))
-        self.runs_table.setHorizontalHeaderLabels(header_list)
-        header = self.runs_table.horizontalHeader()
-        header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
-
-        # Configure the averages table
-        header_list = [
-                "F Freq [Hz] ",
-                "T Freq [Hz] ",
-                "Time [s] ",
-                "E [GPa] ",
-                "G [GPa] ",
-                "Q^-1 ",
-                "Damping ",
-                "P Ratio ",
-                "Notes "]
-        self.avgs_table.setColumnCount(len(header_list))
-        self.avgs_table.setHorizontalHeaderLabels(header_list)
-        header = self.avgs_table.horizontalHeader()
-        header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
-        self.avgs_table.insertRow(0)
+        # Save run button
+        self.save_run_btn.clicked.connect(self.save_run)
 
     def msg(self, s):
         # Shorter wrapper for sending status message to the text box
-        s = "> " + s
+        s = "> " + str(s)
         self.status_msg_box.appendPlainText(s)
 
     ## SIGNALS ##
+
+    def record(self):
+        '''
+        Prepare the waveform plot and flush old data from arrays.
+        '''
+
+        global audio_list
+        audio_list = []
+        
+        self.audio_wfrm_line.setData([0],[0])
+        self.audio_envelope_line.setData([0],[0])
+        self.audio_exp_fit_line.setData([0],[0])
+        self.audio_wfrm.setYRange(min=-0.2, max=0.2)
+        self.audio_wfrm.setXRange(min=0, max=100000)
+        self.update_wfrm_timer.start()
+        self.check_impulse_timer.start()
+
+    def save_run(self):
+        '''
+        The current run is "staged" in the last row of the table.
+        This allows it to be overwritten as many times as desired until
+        the save_run_btn is clicked triggering this method which adds
+        a new row so that the run is "saved" from being overwritten.
+
+        This also exports the audio to a file.
+        '''
+
+        self.update_run_avgs()
+        self.runs_table_data.append(
+                ['-']*len(self.runs_table_data[0]))
+        self.runs_table_model.layoutChanged.emit()
+        self.notes_box.clear()
+        self.save_run_btn.setEnabled(False)
 
     def select_input_device(self):
         '''
@@ -364,17 +469,20 @@ class MainWindow(QtWidgets.QMainWindow):
         gracefully point it to the new device.
         '''
 
-        if self.stream is None:
-            self.stream = sd.InputStream(callback=audio_callback, channels=1)
-
-        self.stream.stop()
+        if self.stream is not None:
+            self.stream.abort()
 
         # Set the default device to be current text
         sd.default.device = self.input_dropdown.currentText()
         dev = self.input_dropdown.currentText()
-        self.msg("Set input device to " + dev)
-
+        self.stream = sd.InputStream(device=dev,
+                                     callback=audio_callback,
+                                     channels=1)
         self.stream.start()
+        sr = sd.query_devices(sd.default.device)['default_samplerate']
+
+        self.msg("Set input device to " + dev + \
+                ". Sample rate: " + str(sr) + "Hz")
 
     def hide_sample_params(self):
         '''
@@ -404,9 +512,10 @@ class MainWindow(QtWidgets.QMainWindow):
         Check the input values and handle exceptions thrown by
         by the geometry class.
 
-        Additionally, the estimated flexural and torsional
-        frequencies are calculated if estimates for E and G
-        are provided.
+        Estimated flexural and torsional frequencies are calculated
+        if estimates for E and G are provided.
+
+        Displays the nodal spacing to the ui.
 
         Finally, this also enables the "Record" button and moves
         the FFT vline to the estimated flexural freq.
@@ -417,7 +526,7 @@ class MainWindow(QtWidgets.QMainWindow):
         b = self.width_box.value()
         m = self.mass_box.value()
         d = self.diameter_box.value()
-        
+
         match self.geometry_dropdown.currentText():
             case "Rectangle":
                 if (L and t and b and m) == 0:
@@ -435,6 +544,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     return
                 try:
                     self.sample_geometry.rod(L, t, d, m)
+                    self.msg("Warning, node spacing not validated")
                     self.msg("Created rod geometry")
                 except ValueError as e:
                     self.msg(str(e))
@@ -445,13 +555,20 @@ class MainWindow(QtWidgets.QMainWindow):
                     return
                 try:
                     self.sample_geometry.disc(t, d, m)
+                    self.msg("Warning, node spacing not validated")
                     self.msg("Created disc geometry")
                 except ValueError as e:
                     self.msg(str(e))
+                    return
             case _:
                 # This shouldn't be possible but good to have
                 self.msg("Error: Missing geometry type")
-        
+                return
+
+        # Help user set spacing of supports
+        ns = self.sample_geometry.node_spacing()
+        self.node_spacing_box.setValue(ns)
+
         # Show estimates of resonant freq if moduli available
         # Input values are GPa
         E = 1E9*self.e_mod_est.value()

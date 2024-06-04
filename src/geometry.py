@@ -18,14 +18,14 @@ class Geometry:
         dimensions to ensure it meets criteria for RFDA.
         '''
 
-        if L/t < 20:
-            raise ValueError("For rect geometry L/t must be greater than 20")
-  
         self._shape = 'rect'
         self._L = L 
         self._t = t 
         self._b = b 
         self._m = m 
+
+        if L/t < 20:
+            raise ValueError("Warning: For rect geometry L/t must be greater than 20")
 
     def rod(self, L, t, d, m):
         '''
@@ -40,14 +40,15 @@ class Geometry:
           dimensions to ensure it meets criteria for RFDA.
         '''
 
-        if L/d < 20:
-            raise ValueError("For rect geometry L/t must be greater than 20")
-
         self._shape = 'rod'
         self._L = L # [m]  Length
         self._t = t # [m]  Thickness
         self._d = d # [m]  Diameter
         self._m = m # [kg] Mass
+
+        if L/d < 20:
+            raise ValueError("Warning: For rod geometry L/d must be greater than 20")
+            pass
 
     def disc(self, t, d, m):
         '''
@@ -68,6 +69,8 @@ class Geometry:
         self._d = d # [m]  Diameter
         self._m = m # [kg] Mass
 
+        # TODO add a check for geometry and throw a ValueError if needed
+
     def flexural_freq(self, E):
         '''
         Inputs:
@@ -82,19 +85,29 @@ class Geometry:
           https://en.wikipedia.org/wiki/Impulse_excitation_technique
         '''
       
-        if self._shape == 'rect':
+        match self._shape:
+            case 'rect':
+                # Correction factor
+                T = 1 + 6.585*np.power((self._t/self._L), 2)
       
-            # Correction factor
-            T = 1 + 6.585*np.power((self._t/self._L), 2)
+                f_f = np.sqrt(E/(T*0.9465)* \
+                    (self._b/self._m)*np.power(self._t/self._L,3))
+                return f_f
   
-            f_f = np.sqrt(E/(T*0.9465)* \
-                (self._b/self._m)*np.power(self._t/self._L,3))
-            return f_f
-  
-        elif sample_geometry._shape == 'rod':
-            raise NotImplementedError("Not implemented for rod!")
-        elif sample_geometry._shape == 'disc':
-            raise NotImplementedError("Not implemented for disk!")
+            case 'rod':
+                #Correction factor
+                T = 1+4.939*np.power(self._d/self._L,2)
+
+                f_f = np.sqrt(E/(1.6067* \
+                                 (np.power(self._L,3)/np.power(self._d,4)) \
+                                 *self._m*T))
+                return f_f
+
+            case 'disc':
+                raise NotImplementedError("Not implemented for disk!")
+
+            case _:
+                raise ValueError("_shape must be one of 'rect', 'rod', 'disc'")
 
     def torsional_freq(self, G):
         '''
@@ -110,22 +123,54 @@ class Geometry:
           https://en.wikipedia.org/wiki/Impulse_excitation_technique
         '''
   
-        if self._shape == 'rect':
-            
-            # Correction factor
-            R = ((1+np.power(self._b/self._t, 2)) / \
-                (4-2.521*(self._t/self._b) * \
-                (1-(1.991/(np.exp(np.pi*self._b/self._t) + 1))))) * \
-                (1+0.00851*np.power(self._b/self._L, 2)) - \
-                (0.060*np.power(self._b/self._L, 3/2)*np.power(self._b/self._t-1,2))
+        match self._shape:
+            case 'rect':
+                # Correction factor
+                R = ((1+np.power(self._b/self._t, 2)) / \
+                    (4-2.521*(self._t/self._b) * \
+                    (1-(1.991/(np.exp(np.pi*self._b/self._t) + 1))))) * \
+                    (1+0.00851*np.power(self._b/self._L, 2)) - \
+                    (0.060*np.power(self._b/self._L, 3/2)*np.power(self._b/self._t-1,2))
+      
+                f_t = np.sqrt((G/R)*(self._b*self._t/(4*self._L*self._m)))
+                return f_t
   
-            f_t = np.sqrt((G/R)*(self._b*self._t/(4*self._L*self._m)))
-            return f_t
-  
-        elif sample_geometry._shape == 'rod':
-            raise NotImplementedError("Not implemented for rod!")
-        elif sample_geometry._shape == 'disc':
-            raise NotImplementedError("Not implemented for disk!")
-        else:
-            raise ValueError("_shape must be one of 'rect', 'rod', 'disc'")
+            case 'rod':
+                # No correction factor needed
+                f_t = np.sqrt(G/(16*self._L*self._m/(np.pi*np.power(self._d,2))))
+                return f_t
 
+            case 'disc':
+                raise NotImplementedError("Not implemented for disk!")
+
+            case _:
+                raise ValueError("_shape must be one of 'rect', 'rod', 'disc'")
+
+    def node_spacing(self):
+        '''
+        Outputs:
+          node_spacing: [m] Spacing between node.
+  
+        Desc:
+            Samples that are resonating should be held at their vibrational
+            nodes. This varies depending on the geometry.
+        '''
+  
+        match self._shape:
+            case 'rect':
+                # Each node is just 0.244L from the end of the bar
+                # http://hyperphysics.phy-astr.gsu.edu/hbase/Music/barres.html
+                node_spacing = (1-2*0.244)*self._L
+                return node_spacing
+  
+            case 'rod':
+                # Each node is just 0.244L from the end of the bar
+                # http://hyperphysics.phy-astr.gsu.edu/hbase/Music/barres.html
+                node_spacing = (1-2*0.244)*self._L
+                return node_spacing
+
+            case 'disc':
+                raise NotImplementedError("Not implemented for disk!")
+
+            case _:
+                raise ValueError("_shape must be one of 'rect', 'rod', 'disc'")
