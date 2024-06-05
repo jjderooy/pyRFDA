@@ -149,7 +149,10 @@ class Geometry:
     def node_spacing(self):
         '''
         Outputs:
-          node_spacing: [m] Spacing between node.
+          node_spacing: (first_node, node_spacing) [m] 
+                        Tuple with the first value being the location of the
+                        node from the end of the sample, and the second being
+                        the space from that node to the next.
   
         Desc:
             Samples that are resonating should be held at their vibrational
@@ -160,14 +163,16 @@ class Geometry:
             case 'rect':
                 # Each node is just 0.244L from the end of the bar
                 # http://hyperphysics.phy-astr.gsu.edu/hbase/Music/barres.html
+                first_node   = 0.244*self._L
                 node_spacing = (1-2*0.244)*self._L
-                return node_spacing
+                return (first_node, node_spacing)
   
             case 'rod':
                 # Each node is just 0.244L from the end of the bar
                 # http://hyperphysics.phy-astr.gsu.edu/hbase/Music/barres.html
+                first_node   = 0.244*self._L
                 node_spacing = (1-2*0.244)*self._L
-                return node_spacing
+                return (first_node, node_spacing)
 
             case 'disc':
                 raise NotImplementedError("Not implemented for disk!")

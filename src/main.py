@@ -1,12 +1,15 @@
 from PyQt5 import QtGui, QtWidgets, uic, QtCore
-from geometry import Geometry
 from scipy.io.wavfile import write
+from geometry import Geometry
+from datetime import datetime
+from fpdf import FPDF
 import matplotlib.pyplot as plt
 import sounddevice as sd
-import soundfile as sf
+import pyqtgraph.exporters
 import pyqtgraph as pg
+import soundfile as sf
 import numpy as np
-import rfda 
+import rfda, os
 
 # TODO
 # Export button that saves graphs as pngs and csv.
@@ -145,6 +148,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # is clicked.
         self.run_data = {}
 
+        self.sample_rate = 44100 # Updated later based on input dev
+
+        self.save_dir = None # Updated later by save dialog
+
         # Welcome message
         self.msg("Welcome to pyRFDA companion!")
         self.msg("Start by defining sample type and parameters," + \
@@ -235,7 +242,7 @@ class MainWindow(QtWidgets.QMainWindow):
         '''
 
         fft_arr = np.abs(np.fft.rfft(audio_arr))
-        freqs_arr = np.fft.rfftfreq(audio_arr.size, 1.0/48000)
+        freqs_arr = np.fft.rfftfreq(audio_arr.size, 1.0/self.sample_rate)
 
         # Graph the FFT
         self.audio_wfrm_fft_line.setData(freqs_arr, fft_arr)
@@ -281,6 +288,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.audio_envelope_line.setData(ue[0], ue[1])
 
         # Fit the exponential decay
+        # TODO handle RuntimeError thrown if optimal a,b,c can't be found
         a, b, c = rfda.exponential_fit(audio_arr)
         x = np.linspace(0, audio_arr.size, 5000)
         exp_fit = rfda.damped_exp(x, a, b, c)
@@ -295,7 +303,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.run_data["Q-1"] = rfda.inv_Q_factor(b, resonant_freq)
 
         # Time of the run in seconds
-        self.run_data["time"] = audio_arr.size/48000
+        self.run_data["time"] = audio_arr.size/self.sample_rate
 
         # Show the run on the runs_table
         self.stage_run()
@@ -389,6 +397,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # Qt Designer so they're configured here.
         '''
 
+        # File dropdown menu
+        self.action_save_as.triggered.connect(self.save_as)
+        self.action_create_report.triggered.connect(self.create_report)
+
         # Record button
         self.record_btn.clicked.connect(self.record)
 
@@ -429,6 +441,62 @@ class MainWindow(QtWidgets.QMainWindow):
 
     ## SIGNALS ##
 
+    def create_report(self):
+        '''
+        Creates and exports a PDF report of the measurements collected 
+        using FPDF for formatting.
+        '''
+
+        # Prompt user to create save location
+        if self.save_dir is None:
+            self.save_as()
+        if self.save_dir is None:
+            self.msg("No save location specified!")
+            return
+
+        date = datetime.now().strftime('%Y-%m-%d_%H-%M')
+        title = "RFDA Report - " + date
+        file_name = os.path.join(self.save_dir, "Report.pdf")
+
+        # Title
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font('Arial', 'B', 16)
+        pdf.cell(40,10, title)
+
+        # Line break
+        pdf.ln(50)
+
+        # Print runs table
+        table_cell_width = 25
+        table_cell_height = 6
+        pdf.set_font('Arial', 'B', 10)
+
+        # Loop over to print column names to the table
+        for col in self.runs_table_data[0]:
+            pdf.cell(table_cell_width,
+                     table_cell_height,
+                     col,
+                     align='C',
+                     border=1)
+
+        # Line break
+        pdf.ln(table_cell_height)
+        pdf.set_font('Arial', '', 10)
+
+        # Loop over to print each bit of data to table
+        for row in self.runs_table_data[1:]:
+            for val in row:
+                pdf.cell(table_cell_width,
+                         table_cell_height,
+                         str(val),
+                         align='C',
+                         border=1)
+            pdf.ln(table_cell_height)
+                    
+        # Write the file
+        pdf.output(file_name, 'F')
+
     def record(self):
         '''
         Prepare the waveform plot and flush old data from arrays.
@@ -452,8 +520,47 @@ class MainWindow(QtWidgets.QMainWindow):
         the save_run_btn is clicked triggering this method which adds
         a new row so that the run is "saved" from being overwritten.
 
-        This also exports the audio to a file.
+        This also exports the graphs and audio collected to the path
+        specified by the user in the Save As dialog.
         '''
+
+        self.record_btn.setEnabled(False)
+
+        # Prompt user to create save location
+        if self.save_dir is None:
+            self.save_as()
+
+        directory = os.path.join(
+                self.save_dir, 
+                "run_" + str(len(self.runs_table_data) - 1))
+        os.mkdir(directory)
+
+        # Export graphs to png
+        self.audio_wfrm.autoRange()
+        file_path = os.path.join(directory, "audio_graph.png")
+        exporter = pg.exporters.ImageExporter(
+                self.audio_wfrm.plotItem)
+        exporter.parameters()['width'] = 1500
+        exporter.parameters()['height'] = 1000
+        exporter.export(file_path)
+
+        self.audio_wfrm_fft.autoRange()
+        file_path = os.path.join(directory, "audio_fft_graph.png")
+        exporter = pg.exporters.ImageExporter(
+                self.audio_wfrm_fft.plotItem)
+        exporter.parameters()['width'] = 1500
+        exporter.parameters()['height'] = 1000
+        exporter.export(file_path)
+
+        # Save recorded audio to .wav and .csv
+        global audio_list
+        audio_arr = np.concatenate(audio_list)
+
+        file_path = os.path.join(directory, "recorded_audio.wav")
+        sf.write(file_path, audio_arr, self.sample_rate)
+
+        file_path = os.path.join(directory, "recorded_audio.csv")
+        np.savetxt(file_path, audio_arr, delimiter=",")
 
         self.update_run_avgs()
         self.runs_table_data.append(
@@ -461,6 +568,33 @@ class MainWindow(QtWidgets.QMainWindow):
         self.runs_table_model.layoutChanged.emit()
         self.notes_box.clear()
         self.save_run_btn.setEnabled(False)
+        self.record_btn.setEnabled(True)
+
+    def save_as(self):
+        '''
+        Standard "Save As" dialog box for selecting the directory
+        to save the generated files to.
+
+        Directory is saved as follows:
+            "<user/selected/path>/<name_box text current-time>/"
+        '''
+
+        dialog = QtWidgets.QFileDialog(self)
+        dialog.setFileMode(QtWidgets.QFileDialog.Directory)
+        dialog.ShowDirsOnly = True
+
+        if dialog.exec_():
+            directory = dialog.selectedFiles()[0]
+
+            directory = os.path.join(
+                    directory, 
+                    self.name_box.text() + " " +
+                    datetime.now().strftime('%Y-%m-%d_%H-%M-%S'))
+            
+            os.mkdir(directory)
+
+            self.msg("Saving files to: " + directory)
+            self.save_dir = directory
 
     def select_input_device(self):
         '''
@@ -474,15 +608,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Set the default device to be current text
         sd.default.device = self.input_dropdown.currentText()
+
+        self.sample_rate = \
+            int(sd.query_devices(sd.default.device)['default_samplerate'])
+
+        # Global ndarry to plot live recorded audio. Adjust the window for
+        # for a given sample rate to always plot 2 seconds of audio.
+        global audio_wfrm_data
+        audio_wfrm_data = np.zeros(self.sample_rate*2)
+
         dev = self.input_dropdown.currentText()
         self.stream = sd.InputStream(device=dev,
                                      callback=audio_callback,
                                      channels=1)
         self.stream.start()
-        sr = sd.query_devices(sd.default.device)['default_samplerate']
 
         self.msg("Set input device to " + dev + \
-                ". Sample rate: " + str(sr) + "Hz")
+                ". Sample rate: " + str(self.sample_rate) + "Hz")
 
     def hide_sample_params(self):
         '''
@@ -566,7 +708,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
 
         # Help user set spacing of supports
-        ns = self.sample_geometry.node_spacing()
+        fn, ns = self.sample_geometry.node_spacing()
+        self.first_node_box.setValue(fn)
         self.node_spacing_box.setValue(ns)
 
         # Show estimates of resonant freq if moduli available
@@ -592,10 +735,8 @@ if __name__ == "__main__":
 
     # TODO can these globals be moved into the mainwindow
     # Or rather, can the callback be in the mainwindow
-
-    # Global ndarry to plot live recorded audio.
     global audio_wfrm_data
-    audio_wfrm_data = np.zeros(100000) # TODO adjust to sample rate
+    audio_wfrm_data = [0]
 
     # Global list to buffer audio before it is written to file.
     global audio_list
