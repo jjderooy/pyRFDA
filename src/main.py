@@ -9,16 +9,8 @@ import pyqtgraph.exporters
 import pyqtgraph as pg
 import soundfile as sf
 import numpy as np
-import rfda, os
+import rfda, os, re, shutil
 
-# TODO
-# Export button that saves graphs as pngs and csv.
-# Report button that creates a PDF of the sample parameters etc.
-# ^ maybe html and then print that? Or LaTeX????
-# Page 21 of Manual 2.5 has much less restrictive geometry AR.
-# Inv Q factor varies widely.
-# Plot recorded waveform after run is complete and show fitted exp.
-# ^ maybe show a legend with the exponential curve equation?
 
 def audio_callback(indata, frames, time, status):
     '''
@@ -31,6 +23,8 @@ def audio_callback(indata, frames, time, status):
 
     Additionally, if actively recording, buffers data into a list of 
     ndarrays which will later be FFT'd etc.
+
+    The start and stop of a recording is controlled by handle_recording()
     '''
 
     global audio_wfrm_data
@@ -71,33 +65,39 @@ class TableModel(QtCore.QAbstractTableModel):
 
 class MainWindow(QtWidgets.QMainWindow):
 
-    # TODO these can be moved to init
-
-    # To be populated with plotLine objects
-    audio_wfrm_line     = None
-    audio_wfrm_fft_line = None
-    audio_envelope_line = None
-    audio_exp_fit_line  = None
-
-    # Movable vertical line for selecting fft peak
-    fft_peak_vline = pg.InfiniteLine(movable=True)
-
-    # Movable horizontal line for selecting audio impulse threshold
-    audio_trig_hline = pg.InfiniteLine(movable=True,
-                                       angle=0,
-                                       pos=0.1)
-
-    # Values of the sample are populated in the ui
-    sample_geometry = Geometry()
-
-    # Input stream from sounddevice. Initialized in select_input_device()
-    stream = None
-
     def __init__(self, *args, **kwargs):
 
         # Load external ui file. Edit this ui file in 'Qt Designer'
         super(MainWindow, self).__init__(*args, **kwargs)
         uic.loadUi('RFDA.ui', self)
+
+        # To be populated with plotLine objects
+        self.audio_wfrm_line     = None
+        self.audio_wfrm_fft_line = None
+        self.audio_envelope_line = None
+        self.audio_exp_fit_line  = None
+
+        # Movable vertical line for selecting fft peak
+        self.fft_peak_vline = pg.InfiniteLine(movable=True)
+
+        # Movable horizontal line for selecting audio impulse threshold
+        self.audio_trig_hline = pg.InfiniteLine(movable=True,
+                                           angle=0,
+                                           pos=0.1)
+
+        # Text object to show equation of fitted exponential on graph
+        self.exp_fit_eqn = pg.TextItem(color=(255,255,255))
+
+        # Values of the sample are populated in the ui
+        self.sample_geometry = Geometry()
+
+        # Input stream from sounddevice. Initialized in select_input_device()
+        self.stream = None
+
+        # Welcome message
+        self.msg("Welcome to pyRFDA companion!")
+        self.msg("Start by defining sample type and parameters," + \
+                " then click the \"Create Sample\" button.")
 
         # Prepare the ui
         self.setup_graphs()
@@ -106,13 +106,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Timer to update live waveform graph
         self.update_wfrm_timer = QtCore.QTimer()
-        self.update_wfrm_timer.setInterval(int(1000/30)) # 30 Hz
+        self.update_wfrm_timer.setInterval(int(1000/30))
         self.update_wfrm_timer.timeout.connect(self.update_audio_wfrm)
         self.update_wfrm_timer.start()
 
         # Timer to check for impulses in incoming audio
         self.check_impulse_timer = QtCore.QTimer()
-        self.check_impulse_timer.setInterval(200) # 5 Hz
+        self.check_impulse_timer.setInterval(int(1000/30))
         self.check_impulse_timer.timeout.connect(self.handle_recording)
         self.check_impulse_timer.start()
 
@@ -125,6 +125,7 @@ class MainWindow(QtWidgets.QMainWindow):
                    "G [GPa] ",
                    "Q^-1 ",
                    "Damping ",
+                   "MSE",
                    "Notes "]
         self.runs_table_data = [header, ["-"]*len(header)]
         self.runs_table_model = TableModel(self.runs_table_data)
@@ -152,12 +153,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.save_dir = None # Updated later by save dialog
 
-        # Welcome message
-        self.msg("Welcome to pyRFDA companion!")
-        self.msg("Start by defining sample type and parameters," + \
-                " then click the \"Create Sample\" button.")
-
     def setup_graphs(self):
+
         # Live microphone audio graph
         self.audio_wfrm_line = \
                 self.audio_wfrm.plot(audio_wfrm_data, 
@@ -170,6 +167,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.audio_wfrm.setLabel("bottom", "Sample")
         self.audio_wfrm.addItem(self.audio_trig_hline)
 
+        self.audio_wfrm.addItem(self.exp_fit_eqn)
         self.audio_envelope_line = self.audio_wfrm.plot(
                 pen={'color': 'red'}, downsample=100)
 
@@ -205,11 +203,10 @@ class MainWindow(QtWidgets.QMainWindow):
         global audio_list
         global recording_flag
 
-        max_sample = np.max(audio_wfrm_data)
+        # Only consider the most recent few samples. This acts as a slight
+        # filter on triggering.
+        max_sample = np.max(audio_wfrm_data[-10000:])
         trig = self.audio_trig_hline.value()
-
-        # TODO setting max_sample like this acts as a sort of box filter
-        # on the trigger. Is this desirable?
 
         # Start of recording
         if max_sample > trig and self.record_btn.isChecked():
@@ -261,13 +258,46 @@ class MainWindow(QtWidgets.QMainWindow):
         resonant_freq = cropped_freqs[np.argmax(cropped_fft)]
         self.run_data["freq"] = resonant_freq
 
-        # Compute material modulus from peak based on run type
+        # Compute modulus from peak based on run type. Q^1 is only recorded
+        # for E mod runs because the support wires are less interfering.
         match self.run_type_dropdown.currentText():
 
             case "Elastic Mod":
                 E = rfda.elastic_modulus(self.sample_geometry, resonant_freq)
                 self.run_data["E"] = E
                 self.run_data.pop("G", "")
+
+                # Upper envelope in red
+                ue = rfda.upper_envelope(audio_arr)
+                self.audio_envelope_line.setData(ue[0], ue[1])
+
+                # Fit the exponential decay
+                try:
+                    a, b, c = rfda.exponential_fit(audio_arr)
+                    x = np.linspace(0, audio_arr.size, 5000)
+                    exp_fit = rfda.damped_exp(x, a, b, c)
+                    self.audio_exp_fit_line.setData(x, exp_fit)
+                    
+                    # Display equation on plot just above max value
+                    self.exp_fit_eqn.setText(text=
+                                           "Fit: " + "{:.3E}".format(a) \
+                                         + " * exp(-" + "{:.3E}".format(b) \
+                                         + ") + " + "{:.3E}".format(c))
+                    self.exp_fit_eqn.setPos(0,1.1*np.max(audio_arr))
+
+                    # b coeff of exponential fit is the damping coeff
+                    self.run_data["damping"] = b
+
+                    # Inverse quality factor
+                    self.run_data["Q-1"] = rfda.inv_Q_factor(b, resonant_freq)
+
+                    # Means squared error
+                    # TODO add MSE here
+
+
+                except RuntimeError:
+                    self.msg("Error: Could not fit exponential to data.")
+                    return
 
             case "Shear Mod":
                 G = rfda.shear_modulus(self.sample_geometry, resonant_freq)
@@ -277,30 +307,12 @@ class MainWindow(QtWidgets.QMainWindow):
             case _:
                 self.msg("Error: Unknown run type.")
 
-        # Graph the recorded audio, the envelope, and the fitted exponential
+        # Graph the recorded audio, and envelope/exp if needed
         self.update_wfrm_timer.stop()
         self.check_impulse_timer.stop()
 
         self.audio_wfrm_line.setData(audio_arr)
-
-        # Upper envelope in red
-        ue = rfda.upper_envelope(audio_arr)
-        self.audio_envelope_line.setData(ue[0], ue[1])
-
-        # Fit the exponential decay
-        # TODO handle RuntimeError thrown if optimal a,b,c can't be found
-        a, b, c = rfda.exponential_fit(audio_arr)
-        x = np.linspace(0, audio_arr.size, 5000)
-        exp_fit = rfda.damped_exp(x, a, b, c)
-        self.audio_exp_fit_line.setData(x, exp_fit)
-
         self.audio_wfrm.autoRange()
-
-        # b coeff of exponential fit is the damping coeff
-        self.run_data["damping"] = b
-
-        # Inverse quality factor
-        self.run_data["Q-1"] = rfda.inv_Q_factor(b, resonant_freq)
 
         # Time of the run in seconds
         self.run_data["time"] = audio_arr.size/self.sample_rate
@@ -334,8 +346,20 @@ class MainWindow(QtWidgets.QMainWindow):
         except KeyError:
             run_list.append("-")
 
-        run_list.append( "{:.3E}".format(self.run_data["Q-1"]))
-        run_list.append( "{:.3E}".format(self.run_data["damping"]))
+        try:
+            run_list.append( "{:.3E}".format(self.run_data["Q-1"]))
+        except KeyError:
+            run_list.append("-")
+
+        try:
+            run_list.append( "{:.3E}".format(self.run_data["damping"]))
+        except KeyError:
+                run_list.append("-")
+
+        try:
+            run_list.append( "{:.3f}".format(self.run_data["mse"]))
+        except KeyError:
+            run_list.append("-")
 
         run_list.append(self.notes_box.toPlainText())
 
@@ -349,46 +373,64 @@ class MainWindow(QtWidgets.QMainWindow):
     def update_run_avgs(self):
         '''
         Updates the run_avgs table with the data from a new run.
-        Called when a run is saved in save_run()
+        Called when a run is saved or deleted.
         '''
 
+        # For averaging
         sum_f_f = 0.0
         sum_t_f = 0.0
         sum_E = 0.0
         sum_G = 0.0
         sum_Q_inv = 0.0
 
-        # Skip first row because its the header
-        for row in self.runs_table_data[1:]:
+        n_E = 0
+        n_G = 0
+
+        # Skip first and last rows (header and staged run)
+        for row in self.runs_table_data[1:-1]:
             
             # Check what type of measurement it was
             if row[3] == "-":
                 # E measurment
                 sum_f_f += float(row[0])
                 sum_E += float(row[2])
+                sum_Q_inv += float(row[4])
+                n_E += 1
             else:
                 # G measurment
                 sum_t_f += float(row[0])
                 sum_G += float(row[3])
+                n_G += 1
 
-            sum_Q_inv += float(row[4])
+        avg_f_f = '-'
+        avg_t_f = '-'
+        avg_E = '-'
+        avg_G = '-'
+        avg_Q_inv = '-'
+
+        # Avoid dividing by zero
+        if n_E:
+            avg_f_f   = "{:.1f}".format(sum_f_f/n_E)
+            avg_E     = "{:.1f}".format(sum_E/n_E)
+            avg_Q_inv = "{:.3E}".format(sum_Q_inv/n_E)
+
+        if n_G:
+            avg_t_f = "{:.2f}".format(sum_t_f/n_G)
+            avg_G   = "{:.1f}".format(sum_G/n_G)
 
         # Poisson ratio using E and G
-        try:
-            poisson_r = rfda.poisson(sum_E, sum_G)
-        except ValueError:
-            poisson_r = "-"
+        poisson_r = '-'
+        if (n_E and n_G):
+            poisson_r = "{:.3f}".format(rfda.poisson(sum_E/n_E, sum_G/n_G))
+            
+        self.avgs_table_data[-1] = [ avg_f_f,
+                                     avg_t_f,
+                                     avg_E,
+                                     avg_G,
+                                     poisson_r,
+                                     avg_Q_inv ]
 
-        # Table always has at least the header and one row when called
-        n = len(self.runs_table_data) - 1 
-        avgs = [ sum_f_f / n,
-                 sum_t_f / n,
-                 sum_E / n,
-                 sum_G / n,
-                 poisson_r,
-                 sum_Q_inv / n ]
-
-        self.avgs_table_data[-1] = avgs
+        # Force table to update
         self.avgs_table_model.layoutChanged.emit()
 
     def setup_inputs(self):
@@ -396,13 +438,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # Certain inputs like dropdown menus can't be configured in
         # Qt Designer so they're configured here.
         '''
-
-        # File dropdown menu
-        self.action_save_as.triggered.connect(self.save_as)
-        self.action_create_report.triggered.connect(self.create_report)
-
-        # Record button
-        self.record_btn.clicked.connect(self.record)
 
         # Add input devices from sd to the devices dropdown
         devs = sd.query_devices()
@@ -434,6 +469,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # Save run button
         self.save_run_btn.clicked.connect(self.save_run)
 
+        # Delete run from runs table button
+        self.delete_run_btn.clicked.connect(self.delete_run)
+
+        # Record button
+        self.record_btn.clicked.connect(self.record)
+
     def msg(self, s):
         # Shorter wrapper for sending status message to the text box
         s = "> " + str(s)
@@ -441,59 +482,247 @@ class MainWindow(QtWidgets.QMainWindow):
 
     ## SIGNALS ##
 
+    def delete_run(self):
+        '''
+        When the delete_run_btn is clicked, any selected rows in the
+        table are deleted from the model data. Also delete the corresponding
+        directory from the save location, and rename the other directories
+        to have ascending numeric IDs.
+        '''
+
+        # selectedRows() returns a QModelIndex
+        selected = self.runs_table.selectionModel().selectedRows()
+        rows = [idx.row() for idx in selected]
+
+        # Iterate in reverse to avoid indices changing while deleting
+        for row in reversed(rows):
+            # Don't remove the header or staged (last) run
+            if (row != 0) and (row != len(self.runs_table_data) - 1):
+                del self.runs_table_data[row]
+
+            # Delete saved run directory
+            shutil.rmtree(os.path.join(self.save_dir, str(row)),
+                          ignore_errors=True)
+
+        # List all folders in the base directory
+        folders = [f for f in os.listdir(self.save_dir) \
+                  if os.path.isdir(os.path.join(self.save_dir, f))]
+        
+        # Sort folders by their numerical names
+        folders.sort(key=lambda x: int(x))
+        
+        # Rename folders to have consecutive numbers starting from 1
+        for index, folder in enumerate(folders):
+            new_name = str(index + 1)
+            current_path = os.path.join(self.save_dir, folder)
+            new_path = os.path.join(self.save_dir, new_name)
+            
+            # Rename the folder
+            os.rename(current_path, new_path)
+
+        # Force table to update
+        self.runs_table_model.layoutChanged.emit()
+        self.update_run_avgs()
+
     def create_report(self):
         '''
         Creates and exports a PDF report of the measurements collected 
         using FPDF for formatting.
         '''
 
-        # Prompt user to create save location
-        if self.save_dir is None:
-            self.save_as()
-        if self.save_dir is None:
-            self.msg("No save location specified!")
-            return
-
-        date = datetime.now().strftime('%Y-%m-%d_%H-%M')
-        title = "RFDA Report - " + date
+        date = datetime.now().strftime('%Y-%m-%d %H:%M')
         file_name = os.path.join(self.save_dir, "Report.pdf")
 
         # Title
+        title = "RFDA Report - \"" + \
+                str.lstrip(self.name_box.text()) + \
+                "\" - " + date
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font('Arial', 'B', 16)
+        pdf.set_font('Arial', 'B', 20)
         pdf.cell(40,10, title)
 
-        # Line break
-        pdf.ln(50)
-
-        # Print runs table
         table_cell_width = 25
         table_cell_height = 6
-        pdf.set_font('Arial', 'B', 10)
 
-        # Loop over to print column names to the table
-        for col in self.runs_table_data[0]:
+        header = []
+        params = []
+        match self.sample_geometry.shape():
+            case "rect":
+                header = ["Type",
+                         "Length [mm]",
+                         "Width [mm]",
+                         "Thickness [mm]",
+                         "Mass [g]"]
+
+                params = [self.sample_geometry.shape(),
+                          str(self.sample_geometry._L),
+                          str(self.sample_geometry._b),
+                          str(self.sample_geometry._t),
+                          str(self.sample_geometry._m)]
+
+            case "rod":
+                header = ["Type",
+                         "Length [mm]",
+                         "Diameter [mm]",
+                         "Mass [g]"]
+
+                params = [self.sample_geometry.shape(),
+                          str(self.sample_geometry._L),
+                          str(self.sample_geometry._d),
+                          str(self.sample_geometry._m)]
+            case "disc":
+                header = ["Type",
+                         "Diameter [mm]",
+                         "Thickness [mm]",
+                         "Mass [g]"]
+
+                params = [self.sample_geometry.shape(),
+                          str(self.sample_geometry._d),
+                          str(self.sample_geometry._t),
+                          str(self.sample_geometry._m)]
+
+        ## Print sample parameters table
+
+        # Subheading
+        pdf.ln(15)
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(40,10, "Sample Parameters:")
+
+        # Header
+        pdf.ln(10)
+        pdf.set_font('Arial', 'B', 10)
+        for col in header:
+            pdf.cell(table_cell_width,
+                     table_cell_height,
+                     col,
+                     align='C',
+                     border=2)
+
+        # Values
+        pdf.ln(table_cell_height)
+        pdf.set_font('Arial', '', 10)
+        for col in params:
             pdf.cell(table_cell_width,
                      table_cell_height,
                      col,
                      align='C',
                      border=1)
 
-        # Line break
+        ## Print runs table minus the notes because they run off the page
+
+        # Subheading
+        pdf.ln(10)
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(40,10, "Recorded Runs:")
+        pdf.ln(10)
+
+        # Header
+        pdf.set_font('Arial', 'B', 10)
+        pdf.cell(15, 6, "Run", align='C', border=2)
+        for col in self.runs_table_data[0][:-1]:
+            pdf.cell(table_cell_width,
+                     table_cell_height,
+                     col,
+                     align='C',
+                     border=2)
+
         pdf.ln(table_cell_height)
         pdf.set_font('Arial', '', 10)
+        for i,row in enumerate(self.runs_table_data[1:-1]):
 
-        # Loop over to print each bit of data to table
-        for row in self.runs_table_data[1:]:
-            for val in row:
+            # Print row number
+            pdf.cell(15,
+                     table_cell_height,
+                     str(i),
+                     align='C',
+                     border=1)
+
+            # Print values in that row
+            for val in row[:-1]:
                 pdf.cell(table_cell_width,
                          table_cell_height,
                          str(val),
                          align='C',
                          border=1)
             pdf.ln(table_cell_height)
-                    
+        pdf.ln(10)
+
+        ## Print averages table
+
+        # Subtitle
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(40,10, "Computed Averages and Values:")
+        pdf.ln(10)
+
+        # Header
+        header = ["Flex. F [Hz]",
+                 "Tors. F [Hz]",
+                 "E [GPa]",
+                 "G [GPa]",
+                 "Poisson R [-]",
+                 "Q^1 [-]"]
+
+        pdf.set_font('Arial', 'B', 10)
+        for col in header:
+            pdf.cell(table_cell_width,
+                     table_cell_height,
+                     col,
+                     align='C',
+                     border=2)
+
+        # Values
+        pdf.ln(table_cell_height)
+        pdf.set_font('Arial', '', 10)
+        for val in self.avgs_table_data[-1]:
+
+            if type(val) is str:
+                pdf.cell(table_cell_width,
+                         table_cell_height,
+                         str(val),
+                         align='C',
+                         border=1)
+            else:
+                pdf.cell(table_cell_width,
+                         table_cell_height,
+                         "{:.2E}".format(val),
+                         align='C',
+                         border=1)
+
+        ## Print notes from runs table
+
+        # Subtitle
+        pdf.ln(10)
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(40,10, "Run Notes:")
+        pdf.ln(10)
+
+        # Header
+        pdf.set_font('Arial', 'B', 10)
+        pdf.cell(15, table_cell_height, "Run", align='C', border=2)
+        pdf.cell(180, 6, "Note", align='C', border=2)
+
+        # Values
+        pdf.ln(table_cell_height)
+        pdf.set_font('Arial', '', 10)
+        for i,row in enumerate(self.runs_table_data[1:-1]):
+
+            # Print row number
+            pdf.cell(15,
+                     table_cell_height,
+                     str(i),
+                     align='C',
+                     border=1)
+
+            # Note is the last value in the TableModel
+            pdf.cell(180,
+                     table_cell_height,
+                     row[-1],
+                     align='L',
+                     border=1)
+            pdf.ln(table_cell_height)
+        pdf.ln(10)
+
         # Write the file
         pdf.output(file_name, 'F')
 
@@ -529,10 +758,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # Prompt user to create save location
         if self.save_dir is None:
             self.save_as()
+        if self.save_dir is None:
+            self.msg("No save location specified.")
+            return
 
         directory = os.path.join(
-                self.save_dir, 
-                "run_" + str(len(self.runs_table_data) - 1))
+                self.save_dir, str(len(self.runs_table_data) - 1))
         os.mkdir(directory)
 
         # Export graphs to png
@@ -562,6 +793,7 @@ class MainWindow(QtWidgets.QMainWindow):
         file_path = os.path.join(directory, "recorded_audio.csv")
         np.savetxt(file_path, audio_arr, delimiter=",")
 
+        # Update/reset the ui elements
         self.update_run_avgs()
         self.runs_table_data.append(
                 ['-']*len(self.runs_table_data[0]))
@@ -569,6 +801,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.notes_box.clear()
         self.save_run_btn.setEnabled(False)
         self.record_btn.setEnabled(True)
+        self.exp_fit_eqn.setText("")
+
+        # Generate the report. This is overwritten each time.
+        self.create_report()
 
     def save_as(self):
         '''
@@ -588,8 +824,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
             directory = os.path.join(
                     directory, 
-                    self.name_box.text() + " " +
-                    datetime.now().strftime('%Y-%m-%d_%H-%M-%S'))
+                    datetime.now().strftime('%Y-%m-%d_%H-%M-%S')) \
+                    + "_" + str.lstrip(self.name_box.text())
             
             os.mkdir(directory)
 
@@ -721,13 +957,22 @@ class MainWindow(QtWidgets.QMainWindow):
             f_f = self.sample_geometry.flexural_freq(E)
             self.flexural_f_est.setValue(int(f_f))
 
-            # TODO make this based on the type of measurement
-            # being conducted (E vs G)
-            self.fft_peak_vline.setValue(f_f)
-
         if G != 0:
             t_f = self.sample_geometry.torsional_freq(G)
             self.torsional_f_est.setValue(int(t_f))
+
+        # Disable all inputs in the sample parameters section so they
+        # can't be changed. The user must reopen the program for a new sample.
+        self.name_box.setEnabled(False)
+        self.geometry_dropdown.setEnabled(False)
+        self.length_box.setEnabled(False)
+        self.width_box.setEnabled(False)
+        self.thickness_box.setEnabled(False)
+        self.diameter_box.setEnabled(False)
+        self.mass_box.setEnabled(False)
+        self.e_mod_est.setEnabled(False)
+        self.g_mod_est.setEnabled(False)
+        self.create_geo_btn.setEnabled(False)
 
         self.record_btn.setEnabled(True)
 

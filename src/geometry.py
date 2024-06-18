@@ -25,7 +25,8 @@ class Geometry:
         self._m = m 
 
         if L/t < 20:
-            raise ValueError("Warning: For rect geometry L/t must be greater than 20")
+            raise ValueError(
+                    "Warning: For rect geometry L/t should be greater than 5")
 
     def rod(self, L, t, d, m):
         '''
@@ -46,9 +47,9 @@ class Geometry:
         self._d = d # [m]  Diameter
         self._m = m # [kg] Mass
 
-        if L/d < 20:
-            raise ValueError("Warning: For rod geometry L/d must be greater than 20")
-            pass
+        if L/d < 5:
+            raise ValueError(
+                    "Warning: For rod geometry L/d should be greater than 5")
 
     def disc(self, t, d, m):
         '''
@@ -60,6 +61,11 @@ class Geometry:
         Desc:
           Define a disc (like a coin) geometry for RFDA. Error checks
           geometry dimensions to ensure it meets criteria for RFDA.
+
+        Note:
+          This is not as trivial to implement and requires lookup
+          tables and several runs of measurements.
+          See Annex 3 of NPL "Measurement Good Practice Guide No. 98"
         '''
 
         raise ValueError("Not implemented! Add error check on disk!")
@@ -83,6 +89,12 @@ class Geometry:
           The flexural resonant frequency f_f of a sample can be computed from
           the elastic modulus E of the  material and its geometry. More info:
           https://en.wikipedia.org/wiki/Impulse_excitation_technique
+
+          Correction factors are specified by ASTM to be accuraute only for
+          L/t > 20 and L/d > 20. However, according to Annex 1 of NPL 
+          "Measurement Good Practice Guide No. 98", these are extremely
+          conservative estimates and for L/t > 5, and L/d > 5, a deviation
+          of only ~1% is observed.
         '''
       
         match self._shape:
@@ -104,6 +116,9 @@ class Geometry:
                 return f_f
 
             case 'disc':
+                # This is not as trivial to implement and requires lookup
+                # tables and several runs of measurements.
+                # See Annex 3 of NPL "Measurement Good Practice Guide No. 98"
                 raise NotImplementedError("Not implemented for disk!")
 
             case _:
@@ -141,6 +156,9 @@ class Geometry:
                 return f_t
 
             case 'disc':
+                # This is not as trivial to implement and requires lookup
+                # tables and several runs of measurements.
+                # See Annex 3 of NPL "Measurement Good Practice Guide No. 98"
                 raise NotImplementedError("Not implemented for disk!")
 
             case _:
@@ -175,6 +193,9 @@ class Geometry:
                 return (first_node, node_spacing)
 
             case 'disc':
+                # This is not as trivial to implement and requires lookup
+                # tables and several runs of measurements.
+                # See Annex 3 of NPL "Measurement Good Practice Guide No. 98"
                 raise NotImplementedError("Not implemented for disk!")
 
             case _:

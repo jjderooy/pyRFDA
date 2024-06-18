@@ -137,7 +137,7 @@ def damped_exp(x, a, b, c):
     '''
     return a*np.exp(-b*x) + c
 
-def exponential_fit(s, guess=0.005):
+def exponential_fit(s, guess=0.0001):
     '''
     Inputs:
         s: 1d audio array from which to compute the damping coeff
@@ -160,7 +160,7 @@ def exponential_fit(s, guess=0.005):
     popt, pocv = curve_fit(damped_exp,   \
                            envelope[0],  \
                            envelope[1],  \
-                           p0=[guess, 0, 0])
+                           p0=[0, guess, 0])
 
     return popt
   

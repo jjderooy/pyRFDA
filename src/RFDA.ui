@@ -103,7 +103,7 @@
           <item row="0" column="0">
            <widget class="QLabel" name="label_16">
             <property name="text">
-             <string>*Name</string>
+             <string>Name</string>
             </property>
            </widget>
           </item>
@@ -133,7 +133,7 @@
              <double>1000.000000000000000</double>
             </property>
             <property name="value">
-             <double>25.430000000000000</double>
+             <double>0.000000000000000</double>
             </property>
            </widget>
           </item>
@@ -170,7 +170,7 @@
              <double>1000.000000000000000</double>
             </property>
             <property name="value">
-             <double>200.000000000000000</double>
+             <double>0.000000000000000</double>
             </property>
            </widget>
           </item>
@@ -183,7 +183,7 @@
              <double>1000.000000000000000</double>
             </property>
             <property name="value">
-             <double>71.049999999999997</double>
+             <double>0.000000000000000</double>
             </property>
            </widget>
           </item>
@@ -202,7 +202,7 @@
              <double>1000.000000000000000</double>
             </property>
             <property name="value">
-             <double>114.409999999999997</double>
+             <double>0.000000000000000</double>
             </property>
            </widget>
           </item>
@@ -228,7 +228,7 @@
              <double>1000.000000000000000</double>
             </property>
             <property name="value">
-             <double>3.210000000000000</double>
+             <double>0.000000000000000</double>
             </property>
            </widget>
           </item>
@@ -256,6 +256,9 @@
           </item>
           <item row="0" column="1">
            <widget class="QLineEdit" name="name_box">
+            <property name="text">
+             <string>unnamed</string>
+            </property>
             <property name="placeholderText">
              <string/>
             </property>
@@ -287,7 +290,7 @@
              <double>1000.000000000000000</double>
             </property>
             <property name="value">
-             <double>70.000000000000000</double>
+             <double>0.000000000000000</double>
             </property>
            </widget>
           </item>
@@ -855,6 +858,12 @@
                    <height>16777215</height>
                   </size>
                  </property>
+                 <property name="alternatingRowColors">
+                  <bool>true</bool>
+                 </property>
+                 <property name="selectionBehavior">
+                  <enum>QAbstractItemView::SelectRows</enum>
+                 </property>
                  <attribute name="horizontalHeaderVisible">
                   <bool>false</bool>
                  </attribute>
@@ -870,10 +879,57 @@
                 </widget>
                </item>
                <item>
-                <widget class="QLabel" name="label_20">
-                 <property name="text">
-                  <string>Run Averages</string>
+                <widget class="QFrame" name="frame_8">
+                 <property name="frameShape">
+                  <enum>QFrame::NoFrame</enum>
                  </property>
+                 <property name="frameShadow">
+                  <enum>QFrame::Raised</enum>
+                 </property>
+                 <layout class="QHBoxLayout" name="horizontalLayout_5">
+                  <property name="spacing">
+                   <number>6</number>
+                  </property>
+                  <property name="leftMargin">
+                   <number>0</number>
+                  </property>
+                  <property name="topMargin">
+                   <number>0</number>
+                  </property>
+                  <property name="rightMargin">
+                   <number>0</number>
+                  </property>
+                  <property name="bottomMargin">
+                   <number>0</number>
+                  </property>
+                  <item>
+                   <widget class="QLabel" name="label_20">
+                    <property name="text">
+                     <string>Run Averages</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <spacer name="horizontalSpacer">
+                    <property name="orientation">
+                     <enum>Qt::Horizontal</enum>
+                    </property>
+                    <property name="sizeHint" stdset="0">
+                     <size>
+                      <width>40</width>
+                      <height>20</height>
+                     </size>
+                    </property>
+                   </spacer>
+                  </item>
+                  <item>
+                   <widget class="QPushButton" name="delete_run_btn">
+                    <property name="text">
+                     <string>Delete Selected Run(s)</string>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
                 </widget>
                </item>
                <item>
@@ -929,14 +985,6 @@
      <height>22</height>
     </rect>
    </property>
-   <widget class="QMenu" name="menuFile">
-    <property name="title">
-     <string>File</string>
-    </property>
-    <addaction name="action_save_as"/>
-    <addaction name="action_create_report"/>
-   </widget>
-   <addaction name="menuFile"/>
   </widget>
   <widget class="QStatusBar" name="statusbar"/>
   <action name="actionSave">
