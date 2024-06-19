@@ -11,6 +11,10 @@ import soundfile as sf
 import numpy as np
 import rfda, os, re, shutil
 
+# TODO
+# Clip the first 10-15% of the audio to avoid recording the sound
+# from the actual hit of the sample.
+
 
 def audio_callback(indata, frames, time, status):
     '''
@@ -237,6 +241,11 @@ class MainWindow(QtWidgets.QMainWindow):
         Compute E, G, damping etc from the recorded run and pass them 
         to stage_run() so they show up on the table.
         '''
+
+        # Clip the first 5% of audio to avoid recording the sound
+        # of the impulse itself.
+        # TODO make this adjustable by the ui
+        audio_arr = audio_arr[int(0.05*audio_arr.size):]
 
         fft_arr = np.abs(np.fft.rfft(audio_arr))
         freqs_arr = np.fft.rfftfreq(audio_arr.size, 1.0/self.sample_rate)
