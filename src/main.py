@@ -3,18 +3,12 @@ from scipy.io.wavfile import write
 from geometry import Geometry
 from datetime import datetime
 from fpdf import FPDF
-import matplotlib.pyplot as plt
 import sounddevice as sd
 import pyqtgraph.exporters
 import pyqtgraph as pg
 import soundfile as sf
 import numpy as np
 import rfda, os, re, shutil
-
-# TODO
-# Clip the first 10-15% of the audio to avoid recording the sound
-# from the actual hit of the sample.
-
 
 def audio_callback(indata, frames, time, status):
     '''
@@ -82,12 +76,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.audio_exp_fit_line  = None
 
         # Movable vertical line for selecting fft peak
-        self.fft_peak_vline = pg.InfiniteLine(movable=True)
+        self.fft_peak_vline = pg.InfiniteLine(movable=True,
+                                           pos=0.1)
 
         # Movable horizontal line for selecting audio impulse threshold
         self.audio_trig_hline = pg.InfiniteLine(movable=True,
                                            angle=0,
-                                           pos=0.1)
+                                           pos=0.125)
 
         # Text object to show equation of fitted exponential on graph
         self.exp_fit_eqn = pg.TextItem(color=(255,255,255))
@@ -244,7 +239,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Clip the first 5% of audio to avoid recording the sound
         # of the impulse itself.
-        # TODO make this adjustable by the ui
+        # TODO make this adjustable by the ui?
         audio_arr = audio_arr[int(0.05*audio_arr.size):]
 
         fft_arr = np.abs(np.fft.rfft(audio_arr))
@@ -291,7 +286,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.exp_fit_eqn.setText(text=
                                            "Fit: " + "{:.3E}".format(a) \
                                          + " * exp(-" + "{:.3E}".format(b) \
-                                         + ") + " + "{:.3E}".format(c))
+                                         + "*t) + " + "{:.3E}".format(c))
                     self.exp_fit_eqn.setPos(0,1.1*np.max(audio_arr))
 
                     # b coeff of exponential fit is the damping coeff
@@ -853,9 +848,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Set the default device to be current text
         sd.default.device = self.input_dropdown.currentText()
-
-        self.sample_rate = \
-            int(sd.query_devices(sd.default.device)['default_samplerate'])
+            
+        # This occasionally throws an error on windows due to duplicate
+        # devices showing up. It doesn't actually cause problems
+        try:
+            self.sample_rate = \
+                int(sd.query_devices(sd.default.device)['default_samplerate'])
+        except ValueError:
+            pass
 
         # Global ndarry to plot live recorded audio. Adjust the window for
         # for a given sample rate to always plot 2 seconds of audio.
@@ -863,10 +863,14 @@ class MainWindow(QtWidgets.QMainWindow):
         audio_wfrm_data = np.zeros(self.sample_rate*2)
 
         dev = self.input_dropdown.currentText()
-        self.stream = sd.InputStream(device=dev,
-                                     callback=audio_callback,
-                                     channels=1)
-        self.stream.start()
+
+        try:
+            self.stream = sd.InputStream(device=dev,
+                                         callback=audio_callback,
+                                         channels=1)
+            self.stream.start()
+        except ValueError:
+            pass
 
         self.msg("Set input device to " + dev + \
                 ". Sample rate: " + str(self.sample_rate) + "Hz")
@@ -931,7 +935,6 @@ class MainWindow(QtWidgets.QMainWindow):
                     return
                 try:
                     self.sample_geometry.rod(L, t, d, m)
-                    self.msg("Warning, node spacing not validated")
                     self.msg("Created rod geometry")
                 except ValueError as e:
                     self.msg(str(e))
