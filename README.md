@@ -17,16 +17,21 @@ git clone https://github.com/jjderooy/pyRFDA.git
 Next, enter that directory and create a virtual environment there:
 ```
 cd pyRFDA
-python -m venv /.venv
+python -m venv .venv/
 ```
-Install the required libraries using pip:
+Activate the venv:
 ```
-pip install -r /path/to/requirements.txt
+source .venv/bin/activate
 ```
 
-From now on, you'll just have to start the venv and run pyRFDA as follows:
+Install the required libraries using pip:
 ```
-source venv/bin/activate
+pip install -r requirements.txt
+```
+
+From now on, to use pyRFDA, open a terminal in `/src` and run:
+```
+source ../.venv/bin/activate
 python main.py
 ```
 
@@ -39,18 +44,23 @@ git clone https://github.com/jjderooy/pyRFDA.git
 Next, enter that directory and create a virtual environment in a directory called `.venv` there. You will need the *virtualenv* package if not installed already: `pip install virtualenv`.
 ```
 cd pyRFDA
-python -m venv \.venv
+python -m venv .venv
+```
+
+Activate the venv:
+```
+.venv\Scripts\activate
 ```
 
 Install the required libraries using pip:
 ```
-pip install -r /path/to/requirements.txt
+pip install -r requirements.txt
 ```
 
-From now on, you'll just have to start the venv and run pyRFDA as follows:
+From now on, to use pyRFDA, open a terminal in `\src` and run:
 ```
-\.venv\Scripts\activate
-python \src\main.py
+..\.venv\Scripts\activate
+python main.py
 ```
 
 # Usage
