@@ -24,7 +24,7 @@ class Geometry:
         self._b = b 
         self._m = m 
 
-        if L/t < 20:
+        if L/t < 5:
             raise ValueError(
                     "Warning: For rect geometry L/t should be greater than 5")
 

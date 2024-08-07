@@ -52,11 +52,15 @@ def shear_modulus(geo, f_t):
         resonant frequency of the torsional mode of vibration. More info:
         https://en.wikipedia.org/wiki/
         Impulse_excitation_technique#Shear_modulus
+
+        Also see:
+        NPL - Good Measurement Practice Guide No. 98 - Annex 1
     '''
 
     match geo.shape():
 
         case 'rect':
+            '''
             # Correction factor
             R = ((1+np.power((geo._b/geo._t),2) / \
                    (4-2.521*(geo._t/geo._b) * \
@@ -65,6 +69,21 @@ def shear_modulus(geo, f_t):
                  0.060*np.power(geo._b/geo._L,1.5)*np.power((geo._b/geo._t)-1,2) \
 
             G = (4*geo._L*geo._m*np.power(f_t,2)*R)/(geo._b*geo._t)
+            '''
+
+            # Shape factor: Eq. A1.2A from NPL
+            B = (geo._b/geo._t + geo._t/geo._b)/((4*geo._t/geo._b) - \
+                2.52*np.power(geo._t/geo._b,2)+0.21*np.power(geo._t/geo._b,6))
+
+
+            # Correction factor: Eq A1.2B from NPL
+            A = (0.5062-0.8776*(geo._b/geo._t) + \
+                 0.3504*np.power(geo._b/geo._t,2) - \
+                 0.0078*np.power(geo._b/geo._t,3)) / \
+                 (12.03*(geo._b/geo._t) + 9.892*np.power(geo._b/geo._t,2))
+
+            # Eq A1.2
+            G = ((4*geo._L*geo._m*np.power(f_t,2))/(geo._b*geo._t))*(B/(1+A))
             return G
 
         case 'rod':
