@@ -6,7 +6,7 @@ Resonant frequency damping analysis is a simple method of determining the elasti
 RFDA's simplicity makes it ideal for low cost analysis of new 3D printed metal alloys. Unfortunately, commercial solutions are extremely expensive. pyRFDA aims to create a mostly plug and play project in Python for conducting RFDA for which a simple apparatus can be constructed from cheap materials with few tools.
 
 # Installation
-Currently, there is one option for installation via a virtual environment. Eventually, pyRFDA Companion will be compiled to a single executable removing the need for a working installation of python.
+Pre-built versions are available for Linux and Windows in the [releases tab](https://github.com/jjderooy/pyRFDA/releases). If you would like to install manually, follow the instructions below. You will need a working python install.
 
 ## Linux
 First, navigate the the folder you would like to install to, open a terminal there and clone the repository:
